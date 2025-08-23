@@ -1,5 +1,12 @@
-# Grouping（基于 gsplat 的 Gaussian Grouping 复现）使用说明 & 复现思路
+# Grouping（基于 gsplat 的 Gaussian Grouping 复现）
 
+场景：counter
+
+|               原图               |                    分割叠加图                    |                     硬标签分割                      |
+| :------------------------------: | :----------------------------------------------: | :-------------------------------------------------: |
+| ![DSC07956](images\DSCF5857.png) | ![DSC07956](images\kitchen_grouping_overlay.png) | ![DSC07956_viz](images\kitchen_grouping_labels.png) |
+
+------
 ## 0. 环境准备
 
 **依赖**：Python 3.9–3.11（建议 3.10）、PyTorch（与 CUDA 匹配）、C++/CUDA 编译环境。
@@ -55,6 +62,12 @@ python grouping/sam_precompute.py \
   --sam_ckpt   grouping/models/sam/sam_vit_h_4b8939.pth \
   --max_instances 60
 ```
+
+场景：garden
+
+|                原图                |                 分割掩码                  |                   分割预览                   |
+|:--------------------------------:|:-------------------------------------:|:----------------------------------------:|
+| ![DSC07956](images\DSC07956.png) | ![DSC07956](images\DSC07956_mask.png) | ![DSC07956_viz](images\DSC07956_viz.png) |
 
 ------
 
@@ -113,7 +126,7 @@ python grouping/group_finetune.py \
   --data_dir data/360_v2/garden \
   --data_factor 4 \
   --mask_dir data/360_v2/garden/masks \
-  --images_dir data/360_v2/garden/images_4 \
+  --images_dir data/360_v2/garden/images_4_png \
   --ckpt results/garden/ckpts/ckpt_6999_rank0.pt \
   --result_dir results/garden_grouping \
   --id_dim 32 \
