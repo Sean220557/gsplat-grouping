@@ -51,12 +51,12 @@ New-Item -ItemType Directory -Force -Path (Split-Path $p) | Out-Null
   "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth", $p)
 ```
 
-**生成实例掩码（PNG，文件名与 `images_4` 对齐）：**
+**生成实例掩码（PNG，文件名与 `images_4_png` 对齐）：**
 
 ```bash
 python grouping/sam_precompute.py \
   --data_dir   data/360_v2/garden \
-  --images_dir data/360_v2/garden/images_4—— \
+  --images_dir data/360_v2/garden/images_4_png \
   --mask_dir   data/360_v2/garden/masks \
   --sam_model  vit_h \
   --sam_ckpt   grouping/models/sam/sam_vit_h_4b8939.pth \
