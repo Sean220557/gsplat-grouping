@@ -1,4 +1,3 @@
-# examples/grouping/group_finetune.py
 import os, math, argparse, glob
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -11,35 +10,25 @@ from torch.utils.data import DataLoader
 
 from gsplat.rendering import rasterization
 
-# 本项目模块
 from load_ckpt import load_ckpt
 from dataset_adapter import GroupingDataset
 
-
-# =========================
-#     模型组件
-# =========================
 class SegHead(nn.Module):
     def __init__(self, d: int, num_classes: int):
         super().__init__()
         self.proj = nn.Linear(d, num_classes, bias=True)
 
     def forward(self, feat_hw_d: torch.Tensor) -> torch.Tensor:
-        # 期望 [H,W,D]
         if feat_hw_d.dim() == 4 and feat_hw_d.shape[0] == 1:
             feat_hw_d = feat_hw_d[0]
         if feat_hw_d.dim() == 2:
-            feat_hw_d = feat_hw_d.unsqueeze(1)  # 兜底
+            feat_hw_d = feat_hw_d.unsqueeze(1)
         H, W, D = feat_hw_d.shape
-        logits = self.proj(feat_hw_d.view(-1, D)).view(H, W, -1)  # [H,W,C]
+        logits = self.proj(feat_hw_d.view(-1, D)).view(H, W, -1)
         return logits
 
 
-# =========================
-#     工具函数
-# =========================
 def to_hwc_uint8(img) -> np.ndarray:
-    """将 batch item 的 image 转成 [H,W,3] uint8，用于可视化/重投影。"""
     if isinstance(img, torch.Tensor):
         x = img
         if x.dim() == 3 and x.shape[0] in (1, 3, 4):  # CHW
@@ -55,7 +44,6 @@ def to_hwc_uint8(img) -> np.ndarray:
 
 
 def colorize_labels(labels_hw: torch.Tensor) -> np.ndarray:
-    """int32 [H,W] → uint8 [H,W,3] 随机调色板（label 0 用深灰）。"""
     H, W = int(labels_hw.shape[0]), int(labels_hw.shape[1])
     n = int(labels_hw.max().item()) + 1
     rng = np.random.RandomState(0)
@@ -73,7 +61,6 @@ def _meshgrid_xy(H, W, device):
 
 
 def _ssim(img1, img2, C1=0.01 ** 2, C2=0.03 ** 2):
-    """单尺度 SSIM（通道均值），img∈[0,1]，[H,W,3]"""
     t1 = img1.permute(2, 0, 1)[None]
     t2 = img2.permute(2, 0, 1)[None]
     mu1 = F.avg_pool2d(t1, 3, 1, 1)
@@ -88,33 +75,29 @@ def _ssim(img1, img2, C1=0.01 ** 2, C2=0.03 ** 2):
 
 
 def _warp_ref_to_tgt(
-    img_ref: torch.Tensor,  # [H,W,3] in [0,1], device
-    D_t: torch.Tensor,  # [H,W]
+    img_ref: torch.Tensor,
+    D_t: torch.Tensor,
     K_t: torch.Tensor,
     viewmat_t: torch.Tensor,
     K_r: torch.Tensor,
     viewmat_r: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """用目标视角深度把参考图像重投影到目标视角，返回 C_tilde 和有效掩码。"""
     device = img_ref.device
     H, W = int(D_t.shape[0]), int(D_t.shape[1])
 
     x, y = _meshgrid_xy(H, W, device)
     ones = torch.ones_like(x)
-    pix = torch.stack([x, y, ones], dim=-1).view(-1, 3)  # [HW,3]
+    pix = torch.stack([x, y, ones], dim=-1).view(-1, 3)
     Kt_inv = torch.inverse(K_t)
 
-    # 相机坐标方向
     dirs_cam = (Kt_inv @ pix.T).T
     dirs_cam = dirs_cam / (dirs_cam[:, 2:3].clamp(min=1e-6))
 
-    # 世界坐标
-    Twc_t = torch.inverse(viewmat_t)  # c2w
+    Twc_t = torch.inverse(viewmat_t)
     Rwc_t = Twc_t[:3, :3]
     cw_t = Twc_t[:3, 3]
     Xw = cw_t[None, :] + (Rwc_t @ dirs_cam.T).T * D_t.view(-1, 1)
 
-    # 到参考相机坐标：x_r = R_cw * x_w + t_cw
     Rcw_r = viewmat_r[:3, :3]
     tcw_r = viewmat_r[:3, 3]
     Xr = (Rcw_r @ Xw.T).T + tcw_r[None, :]
@@ -126,7 +109,7 @@ def _warp_ref_to_tgt(
     v_norm = (v / (H - 1) * 2 - 1).clamp(-1, 1)
     grid = torch.stack([u_norm, v_norm], dim=-1).view(1, H, W, 2)
 
-    ref = img_ref.permute(2, 0, 1)[None]  # [1,3,H,W]
+    ref = img_ref.permute(2, 0, 1)[None]
     Ct = F.grid_sample(
         ref, grid, mode="bilinear", padding_mode="zeros", align_corners=True
     )[0].permute(1, 2, 0)
@@ -136,16 +119,11 @@ def _warp_ref_to_tgt(
 
 
 def _depth_to_normal(depth: torch.Tensor, K: torch.Tensor) -> torch.Tensor:
-    """
-    从深度图估计法线（相机坐标系），depth:[H,W]，K:[3,3] -> normals:[H,W,3] in [-1,1]
-    近似：邻域有限差分 + 反投影
-    """
     H, W = int(depth.shape[0]), int(depth.shape[1])
     device = depth.device
     fx, fy = K[0, 0], K[1, 1]
     cx, cy = K[0, 2], K[1, 2]
 
-    # 计算每个像素的 3D 坐标
     y, x = torch.meshgrid(
         torch.arange(H, device=device), torch.arange(W, device=device), indexing="ij"
     )
@@ -154,11 +132,9 @@ def _depth_to_normal(depth: torch.Tensor, K: torch.Tensor) -> torch.Tensor:
     Y = (y - cy) * z / fy
     Pw = torch.stack([X, Y, z], dim=-1)  # [H,W,3] 相机坐标
 
-    # 邻域差分
     dx = Pw[:, 1:, :] - Pw[:, :-1, :]
     dy = Pw[1:, :, :] - Pw[:-1, :, :]
 
-    # 对齐到 H-1, W-1
     Hm, Wm = H - 1, W - 1
     vx = dx[:Hm, :Wm, :]
     vy = dy[:Hm, :Wm, :]
@@ -166,7 +142,6 @@ def _depth_to_normal(depth: torch.Tensor, K: torch.Tensor) -> torch.Tensor:
     n = torch.linalg.cross(vx, vy)  # [H-1,W-1,3]
     n = F.normalize(n, dim=-1, eps=1e-6)
 
-    # 填回到原分辨率（边界复制）
     normals = torch.zeros((H, W, 3), device=device, dtype=depth.dtype)
     normals[:Hm, :Wm, :] = n
     normals[Hm:, :Wm, :] = n[-1:, :, :]
@@ -187,7 +162,7 @@ def _load_depth_prior(prior_dir: Optional[str], stem: str, H: int, W: int, devic
         import imageio.v2 as imageio
         d = torch.from_numpy(imageio.imread(p_png.as_posix()).astype(np.float32))
         if d.max() > 1.0:
-            d = d / 1000.0  # 粗略假设毫米
+            d = d / 1000.0
     else:
         return None
     if d.ndim == 3:
@@ -225,7 +200,6 @@ def _load_normal_prior(prior_dir: Optional[str], stem: str, H: int, W: int, devi
 
 
 def _align_depth_scale_shift(D_render: torch.Tensor, D_prior: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
-    """用最小二乘在有效像素上拟合 a*D_prior + b ≈ D_render，返回对齐后的 prior。"""
     v = valid & torch.isfinite(D_render) & torch.isfinite(D_prior)
     if v.sum() < 100:
         return D_prior
@@ -236,14 +210,10 @@ def _align_depth_scale_shift(D_render: torch.Tensor, D_prior: torch.Tensor, vali
     return a * D_prior + b
 
 
-# =========================
-#     渲染特征 + 深度
-# =========================
 @torch.no_grad()
 def _rasterize_once(
     means, quats, scales, opacities, colors, viewmat, K, width, height, camera_model="pinhole", render_mode=None
 ):
-    # 优先尝试带期望深度的模式；若不支持 render_mode，可省略该参数
     kwargs = dict(
         means=means,
         quats=quats,
@@ -262,7 +232,7 @@ def _rasterize_once(
     if render_mode is not None:
         kwargs["render_mode"] = render_mode
     render, alphas, _ = rasterization(**kwargs)
-    return render[0], (alphas[0, :, :, 0] if alphas is not None else None)  # [H,W,C], [H,W] or None
+    return render[0], (alphas[0, :, :, 0] if alphas is not None else None)
 
 
 def render_id_feature_once(
@@ -271,7 +241,6 @@ def render_id_feature_once(
     ss = max(1, int(ssaa))
     Hi, Wi = int(height * ss), int(width * ss)
 
-    # 一次渲染拿到 [H,W,D+1]：D维特征 + 期望深度（若支持），以及 alpha
     try:
         render_hi, alpha_hi = _rasterize_once(
             means, quats, scales, opacities, id_codes, viewmat, K, Wi, Hi, camera_model, render_mode="RGB+ED"
@@ -279,7 +248,6 @@ def render_id_feature_once(
         feat_hi = render_hi[:, :, :-1]
         depth_hi = render_hi[:, :, -1]
     except TypeError:
-        # 兼容没有 render_mode 的 gsplat：只渲染特征；深度设为全 0（几何项将被弱化）
         render_hi, alpha_hi = _rasterize_once(
             means, quats, scales, opacities, id_codes, viewmat, K, Wi, Hi, camera_model, render_mode=None
         )
@@ -304,12 +272,8 @@ def render_id_feature_once(
     feat = torch.nan_to_num(feat, nan=0.0, posinf=0.0, neginf=0.0)
     depth = torch.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
     alpha = torch.clamp(alpha, 0.0, 1.0)
-    return feat, depth, alpha  # [H,W,D], [H,W], [H,W]
+    return feat, depth, alpha
 
-
-# =========================
-#     评测（硬标签）
-# =========================
 @torch.no_grad()
 def do_eval_logits(
     ds: GroupingDataset,
@@ -355,7 +319,6 @@ def do_eval_logits(
                     import cv2
                     color = cv2.resize(color, (rgb.shape[1], rgb.shape[0]), interpolation=cv2.INTER_NEAREST)
                 except Exception:
-                    # 备用：用 torch 最近邻
                     t = torch.from_numpy(color).permute(2, 0, 1).unsqueeze(0).float()
                     t = F.interpolate(t, size=(rgb.shape[0], rgb.shape[1]), mode="nearest")
                     color = t.squeeze(0).permute(1, 2, 0).byte().numpy()
@@ -387,12 +350,8 @@ def parse_indices(s: str) -> List[int]:
     return out
 
 
-# =========================
-#     主训练流程
-# =========================
 def main():
     ap = argparse.ArgumentParser()
-    # 数据 / ckpt
     ap.add_argument("--data_dir", type=str, required=True)
     ap.add_argument("--data_factor", type=int, default=4)
     ap.add_argument("--mask_dir", type=str, required=True)
@@ -400,7 +359,6 @@ def main():
     ap.add_argument("--ckpt", type=str, required=True)
     ap.add_argument("--result_dir", type=str, default="results/grouping_run")
 
-    # 模型/优化
     ap.add_argument("--id_dim", type=int, default=32)
     ap.add_argument("--max_classes", type=int, default=64)
     ap.add_argument("--epochs", type=int, default=3)
@@ -409,7 +367,6 @@ def main():
     ap.add_argument("--ignore_index", type=int, default=0)
     ap.add_argument("--camera_model", type=str, default="pinhole")
 
-    # 稳边界调参
     ap.add_argument("--lr_id", type=float, default=3e-3)
     ap.add_argument("--lr_head", type=float, default=1e-3)
     ap.add_argument("--warmup_steps", type=int, default=500)
@@ -420,14 +377,12 @@ def main():
     ap.add_argument("--min_fg_ratio", type=float, default=0.01)
     ap.add_argument("--ssaa", type=int, default=1)
 
-    # 评测/渲染（硬标签）
     ap.add_argument("--eval_mode", type=str, default="logits", choices=["none", "logits"])
     ap.add_argument("--eval_indices", type=str, default="0,10,20", help="逗号/区间，train 索引用于评测渲染")
     ap.add_argument("--eval_every", type=int, default=1)
     ap.add_argument("--eval_overlay", action="store_true")
     ap.add_argument("--overlay_alpha", type=float, default=0.35)
 
-    # --- GOC Geometry Regularization ---
     ap.add_argument("--geo_enable", action="store_true", help="启用 GOC 4.2 的几何正则（Ld/Ldn/Lpho/Lgeo）")
     ap.add_argument("--prior_depth_dir", type=str, default=None,
                     help="深度先验目录：depth/{stem}.npy|png，与 images 文件名对齐")
@@ -443,7 +398,6 @@ def main():
     args = ap.parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # 数据
     ds = GroupingDataset(
         data_dir=args.data_dir,
         factor=args.data_factor,
@@ -456,7 +410,6 @@ def main():
         ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True
     )
 
-    # 读取 gsplat ckpt（按官方激活）
     base = load_ckpt(args.ckpt, device=device)
     means, quats, scales = [base[k].to(device) for k in ("means", "quats", "scales")]
     opacities = base["opacities"].to(device)
@@ -496,18 +449,15 @@ def main():
             gt = mask0.to(device).long() if isinstance(mask0, torch.Tensor) else torch.from_numpy(mask0).to(device).long()
             H, W = int(gt.shape[0]), int(gt.shape[1])
 
-            # ---- 跳过无前景样本 ----
             valid_pix = (gt != args.ignore_index)
             fg_ratio = valid_pix.float().mean().item()
             if fg_ratio < args.min_fg_ratio:
                 continue
 
-            # ---- 渲染特征 + 期望深度 + alpha ----
             feat, depth, alpha = render_id_feature_once(
                 means, quats, scales, opacities, id_codes, viewmat, K, W, H, ssaa=args.ssaa, camera_model=args.camera_model
-            )  # [H,W,D], [H,W], [H,W]
+            )
 
-            # ---- 分类头 + 边界权重 CE ----
             num_cls = min(int(gt.max().item()) + 1, args.max_classes)
             logits = head(feat)[..., :num_cls]
 
@@ -537,31 +487,24 @@ def main():
             ce_pix = F.cross_entropy(logits_flat, gt_flat, reduction="none")
             loss_ce = (ce_pix * weight_flat).sum() / (weight_flat.sum() + 1e-8)
 
-            # ---- TV 正则（在 softmax 概率上）----
             prob = F.softmax(logits, dim=-1)
             dx = prob[1:, :, :] - prob[:-1, :, :]
             dy = prob[:, 1:, :] - prob[:, :-1, :]
             loss_tv = args.tv_weight * (dx.abs().mean() + dy.abs().mean())
 
-            # ---- 轻 L2 正则 ----
             loss_reg = (id_codes ** 2).mean() * 1e-4
 
-            # =============================
-            #   GOC 4.2 Geometry Regularization
-            # =============================
             loss_d = torch.tensor(0.0, device=device)
             loss_dn = torch.tensor(0.0, device=device)
             loss_pho = torch.tensor(0.0, device=device)
             loss_geo = torch.tensor(0.0, device=device)
 
             if args.geo_enable:
-                # 当前帧文件名 stem（用于加载先验）
                 if "path" in batch:
                     stem = Path(batch["path"][0]).stem
                 else:
                     stem = f"{it:06d}"
 
-                # (a) 深度先验：对齐 scale+shift 后 L1
                 D_hat = _load_depth_prior(args.prior_depth_dir, stem, H, W, device)
                 if D_hat is not None:
                     v = (alpha > 0.05) & torch.isfinite(depth) & torch.isfinite(D_hat)
@@ -569,14 +512,12 @@ def main():
                         D_hat_aligned = _align_depth_scale_shift(depth, D_hat, v)
                         loss_d = torch.abs(depth - D_hat_aligned)[v].mean()
 
-                # (b) 法线先验：从深度估计法线，与先验作 1 - dot，alpha 加权
-                N_d = _depth_to_normal(depth, K)  # [H,W,3]
+                N_d = _depth_to_normal(depth, K)
                 N_hat = _load_normal_prior(args.prior_normal_dir, stem, H, W, device)
                 if N_hat is not None:
                     dot = (F.normalize(N_d, dim=-1) * F.normalize(N_hat, dim=-1)).sum(-1).clamp(-1, 1)
                     loss_dn = (alpha * (1.0 - dot)).mean()
 
-                # (c) 光度重投影（目标 ← 参考）
                 ref_idx = (
                     (batch.get("index", [it])[0] if isinstance(batch.get("index", [it]), list) else it)
                     + int(args.pho_pair_stride)
@@ -594,13 +535,10 @@ def main():
                 l1 = torch.abs(rgb_t - C_tilde)[vld].mean() if vld.any() else torch.tensor(0.0, device=device)
                 loss_pho = (1.0 - ssim_val) * lamb / 2.0 + (1.0 - lamb) * l1
 
-                # (d) 几何重投影一致性（目标→参考 单向）
-                # 渲染参考视角深度
                 _, D_ref, _ = render_id_feature_once(
                     means, quats, scales, opacities, id_codes, viewmat_r, K_r, W, H, ssaa=1, camera_model=args.camera_model
                 )
 
-                # 用目标深度生成世界点 → 参考像素上采样 D_ref 比较
                 x, y = _meshgrid_xy(H, W, device)
                 ones = torch.ones_like(x)
                 pix = torch.stack([x, y, ones], dim=-1).view(-1, 3)
@@ -632,7 +570,6 @@ def main():
                     else torch.tensor(0.0, device=device)
                 )
 
-            # ---- 总损失 ----
             loss = (
                 loss_ce
                 + loss_tv
@@ -660,7 +597,6 @@ def main():
                 )
             global_step += 1
 
-        # ---- 保存 ckpt ----
         ckpt_path = os.path.join(args.result_dir, f"grouping_ep{ep:02d}.pt")
         torch.save(
             {
@@ -685,7 +621,6 @@ def main():
         )
         print(f"saved: {ckpt_path}")
 
-        # ---- 评测渲染：硬标签 logits ----
         if args.eval_mode == "logits" and ((ep + 1) % args.eval_every == 0):
             do_eval_logits(
                 ds,

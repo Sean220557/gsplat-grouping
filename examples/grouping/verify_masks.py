@@ -119,7 +119,7 @@ def main():
             miss += 1
         else:
             m = imageio.imread(mp.as_posix())
-            if m.ndim == 3:  # 容错：若误存成 RGB
+            if m.ndim == 3:
                 m = m[..., 0]
             if m.shape[:2] != (H, W):
                 m = _nearest_resize_mask(m, H, W)
@@ -134,11 +134,9 @@ def main():
             else:
                 ok += 1
 
-            # 叠加可视化
             if args.export_overlays and i < args.overlay_limit:
                 import cv2
 
-                # 读原图
                 img_path = image_files[i]
                 img = imageio.imread(img_path)
                 if img.ndim == 2:

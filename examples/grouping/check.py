@@ -1,4 +1,3 @@
-# examples/grouping/check.py
 import argparse, glob
 from pathlib import Path
 import numpy as np
@@ -14,7 +13,6 @@ import torch
 import sys
 EXAMPLES_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EXAMPLES_DIR))
-# ---- 可选：仅在 --ckpt 时需要 ----
 try:
     from gsplat.rendering import rasterization
     from datasets.colmap import Dataset as ColmapDataset, Parser as ColmapParser
@@ -84,11 +82,9 @@ def resize_nn(arr: np.ndarray, size_hw: tuple[int,int]) -> np.ndarray:
 
 
 def _get_viewmat(item: dict) -> torch.Tensor:
-    # 直接的 view 矩阵
     for k in ("viewmat", "w2c", "world_view_transform"):
         if k in item:
             return item[k].float()
-    # 需要 inverse 的 world 矩阵
     for k in ("camtoworld", "c2w", "camera_to_world", "world_to_camera_inv"):
         if k in item:
             return torch.inverse(item[k].float())
@@ -102,7 +98,6 @@ def _get_K(item: dict) -> torch.Tensor:
         fx, fy, cx, cy = item["intrinsics"]
         K = torch.tensor([[fx,0,cx],[0,fy,cy],[0,0,1]], dtype=torch.float32, device=fx.device)
         return K
-    # 兜底（不常用）
     for k in ("focal", "fx", "fy", "cx", "cy"):
         if k in item:
             fx = float(item.get("fx", item.get("focal", 1.0)))
@@ -120,7 +115,6 @@ def main():
     ap.add_argument("--mask_dir", required=True)
     ap.add_argument("--idx", type=int, default=0)
     ap.add_argument("--images_dir", type=str, default=None)
-    # 可选：alpha 覆盖 + 双向 overlay
     ap.add_argument("--ckpt", type=str, default=None)
     ap.add_argument("--alpha_th", type=float, default=0.05)
     ap.add_argument("--alpha_out", type=str, default=None,
@@ -143,7 +137,6 @@ def main():
     print(f"[info] picked image[{args.idx}] = {img_path.name} (stem='{stem}')")
     print(f"[info] searching mask under {mask_dir}")
 
-    # ---- 掩码检查 ----
     mp = find_mask(mask_dir, stem)
     if mp is None:
         print(f"[ERROR] mask missing for stem '{stem}'. Tried: {mask_dir}/{stem}.png|.npy and fuzzy '{stem}*'")
@@ -152,7 +145,6 @@ def main():
         return
 
     mask = read_mask_any(mp)
-    # 取原图尺寸
     try:
         from PIL import Image as PILImage
         with PILImage.open(img_path.as_posix()) as im:
@@ -166,7 +158,6 @@ def main():
     print(f"[OK] mask file = {mp.name}")
     print(f"[OK] mask>0 ratio = {ratio:.4f} (H={H}, W={W})")
 
-    # ---- 可选：alpha 覆盖 + 双向 overlay（按同名帧匹配）----
     if args.ckpt is not None:
         if any(x is None for x in (ColmapDataset, ColmapParser, rasterization, load_ckpt)):
             print("[warn] alpha 检查所需依赖未导入，跳过。")
@@ -188,7 +179,6 @@ def main():
             match_idx = args.idx
         item = ds[match_idx]
 
-        # 2) 相机矩阵（容错多键名）
         try:
             viewmat = _get_viewmat(item).to(device).float()
             K = _get_K(item).to(device).float()
@@ -201,11 +191,9 @@ def main():
         else:
             H2, W2 = H, W
 
-        # 3) 载 ckpt
         ck = load_ckpt(args.ckpt, device=device)
         means, quats, scales, opacities = ck["means"], ck["quats"], ck["scales"], ck["opacities"]
 
-        # 4) 渲 alpha 的小函数
         def render_alpha(vmat):
             dummy = torch.zeros((means.shape[0], 1), device=device, dtype=means.dtype)
             _, alphas, _ = rasterization(
@@ -215,21 +203,18 @@ def main():
             )
             return alphas[0, :, :, 0].clamp(0, 1)
 
-        # 5) 读原图（用于 overlay）
         rgb = imageio.imread(img_path.as_posix())
         if rgb.ndim == 2:
             rgb = np.repeat(rgb[..., None], 3, axis=2)
         if rgb.dtype != np.uint8:
             rgb = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
 
-        # 6) 分别渲 w2c / c2w_inv
         alpha_w2c = render_alpha(viewmat)
         alpha_c2w_inv = render_alpha(torch.inverse(viewmat))
 
         def save_pair(a, tag):
             a_g = a.pow(0.7).detach().cpu().numpy()  # gamma=0.7 更易看
             a8 = (a_g * 255).astype(np.uint8)
-            # 伪彩
             try:
                 import cv2
                 heat = cv2.applyColorMap(a8, cv2.COLORMAP_JET)[:, :, ::-1]  # BGR->RGB
@@ -248,11 +233,9 @@ def main():
             print("wrote:", g_path.as_posix())
             print("wrote:", ov_path.as_posix())
 
-        # 输出两套图
         save_pair(alpha_w2c, "w2c")
         save_pair(alpha_c2w_inv, "c2w_inv")
 
-        # 覆盖率统计（阈值同一套）
         th = float(args.alpha_th)
         r1 = (alpha_w2c > th).float().mean().item()
         r2 = (alpha_c2w_inv > th).float().mean().item()

@@ -1,4 +1,3 @@
-# examples/grouping/render_groups.py
 import os, math, argparse, glob
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -12,9 +11,6 @@ from gsplat.rendering import rasterization
 from dataset_adapter import GroupingDataset
 
 
-# --------------------------
-#   Small utils
-# --------------------------
 def parse_indices(s: str, n_total: int) -> List[int]:
     if s in (None, "", "all", "*"):
         return list(range(n_total))
@@ -50,26 +46,21 @@ def to_hwc_uint8(img) -> np.ndarray:
 
 
 def colorize_labels(labels_hw: torch.Tensor, seed: int = 0) -> np.ndarray:
-    """int32 [H,W] → uint8 [H,W,3] 稳定调色板（label 0 用深灰）。"""
     H, W = int(labels_hw.shape[0]), int(labels_hw.shape[1])
     n = int(labels_hw.max().item()) + 1
     rng = np.random.RandomState(seed)
     cmap = rng.randint(0, 255, size=(max(n, 256), 3), dtype=np.uint8)
-    cmap[0] = np.array([40, 40, 40], dtype=np.uint8)  # 背景更暗好看边界
+    cmap[0] = np.array([40, 40, 40], dtype=np.uint8)
     lab = labels_hw.detach().cpu().numpy().astype(np.int32)
     return cmap[lab]
 
 
-# --------------------------
-#   SegHead (需与训练一致)
-# --------------------------
 class SegHead(nn.Module):
     def __init__(self, d: int, num_classes: int):
         super().__init__()
         self.proj = nn.Linear(d, num_classes, bias=True)
 
     def forward(self, feat_hw_d: torch.Tensor) -> torch.Tensor:
-        # 期望 [H,W,D]；若 [1,H,W,D] 取 batch=1
         if feat_hw_d.dim() == 4 and feat_hw_d.shape[0] == 1:
             feat_hw_d = feat_hw_d[0]
         H, W, D = feat_hw_d.shape
@@ -77,9 +68,6 @@ class SegHead(nn.Module):
         return logits
 
 
-# --------------------------
-#   Rasterize helpers
-# --------------------------
 @torch.no_grad()
 def _rasterize_once(
     means, quats, scales, opacities, colors, viewmat, K, width, height, camera_model="pinhole", render_mode=None
@@ -112,7 +100,6 @@ def render_id_feature_once(
     ss = max(1, int(ssaa))
     Hi, Wi = int(height * ss), int(width * ss)
 
-    # 渲染 [H,W,D+1]：D维特征 + 期望深度（若支持），以及 alpha
     try:
         render_hi, alpha_hi = _rasterize_once(
             means, quats, scales, opacities, id_codes, viewmat, K, Wi, Hi, camera_model, render_mode="RGB+ED"
@@ -120,9 +107,9 @@ def render_id_feature_once(
         feat_hi = render_hi[:, :, :-1]
         depth_hi = render_hi[:, :, -1]
     except TypeError:
-        means_cam = (viewmat[:3, :3] @ means.T + viewmat[:3, 3:4]).T  # [N,3] w2c
-        z_cam = means_cam[:, 2:3]                                     # [N,1]
-        colors_aug = torch.cat([id_codes, z_cam], dim=1)              # [N, D+1]
+        means_cam = (viewmat[:3, :3] @ means.T + viewmat[:3, 3:4]).T
+        z_cam = means_cam[:, 2:3]
+        colors_aug = torch.cat([id_codes, z_cam], dim=1)
         render_hi, alpha_hi = _rasterize_once(
             means, quats, scales, opacities, colors_aug, viewmat, K, Wi, Hi, camera_model, render_mode=None
         )
@@ -146,12 +133,9 @@ def render_id_feature_once(
     feat = torch.nan_to_num(feat, nan=0.0, posinf=0.0, neginf=0.0)
     depth = torch.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
     alpha = torch.clamp(alpha, 0.0, 1.0)
-    return feat, depth, alpha  # [H,W,D], [H,W], [H,W]
+    return feat, depth, alpha
 
 
-# --------------------------
-#   Main
-# --------------------------
 def main():
     ap = argparse.ArgumentParser("Render grouping results (hard labels)")
     ap.add_argument("--data_dir", required=True, type=str)
@@ -172,7 +156,6 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
 
-    # --- Load dataset (仅取相机与原图) ---
     ds = GroupingDataset(
         data_dir=args.data_dir,
         factor=args.data_factor,
@@ -182,16 +165,13 @@ def main():
         images_dir=args.images_dir,
     )
 
-    # 渲染范围
     render_ids = parse_indices(args.indices, len(ds))
     print(f"[render] total={len(ds)}, will render {len(render_ids)} frames")
 
-    # --- Load grouping ckpt ---
     ckpt = torch.load(args.ckpt, map_location=device)
     spl = ckpt["splats"]
     grp = ckpt["grouping"]
 
-    # 反激活：训练时保存了 log/scalar；渲染需 sigmoid/exp
     means = spl["means"].to(device).float()                 # [N,3]
     quats = spl["quats"].to(device).float()                 # [N,4]
     scales = torch.exp(spl["scales"].to(device).float())    # [N,3]
@@ -223,7 +203,6 @@ def main():
             else:
                 img_t = img.to(device).float()
 
-            # 解析分辨率
             if "height" in item and "width" in item:
                 H, W = int(item["height"]), int(item["width"])
             else:
@@ -232,12 +211,9 @@ def main():
                 else:
                     H, W = int(img_t.shape[1]), int(img_t.shape[2])
 
-            # 渲染 D 维 ID 特征
             feat, _, _ = render_id_feature_once(
                 means, quats, scales, opacities, id_codes, viewmat, K, W, H, ssaa=args.ssaa, camera_model=args.camera_model
             )
-
-            # logits -> argmax
             logits = head(feat)[..., :global_num_classes]
             pred = logits.argmax(dim=-1)  # [H,W]
             color = colorize_labels(pred, seed=args.palette_seed)

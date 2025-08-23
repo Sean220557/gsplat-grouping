@@ -1,14 +1,7 @@
-# Copyright (c) 2025
-# Precompute SAM masks for grouping: saves per-image labelmap (uint8)
-# 0 = background, 1..K = instances kept by area (topk), 255 = ignore
-# If no FG found under strict thresholds, automatically relax and retry.
-
-import os, sys, glob
 from pathlib import Path
 import argparse
 import numpy as np
 
-# IO
 from PIL import Image
 import imageio.v2 as imageio
 import cv2
@@ -22,7 +15,6 @@ def load_image_rgb(p):
         img = np.stack([img, img, img], -1)
     if img.shape[2] == 4:
         img = img[..., :3]
-    # Some readers may produce BGR (cv2). imageio给的是RGB，这里保持不变
     return img
 
 def draw_overlay(rgb, label, alpha=0.5):
@@ -38,9 +30,6 @@ def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
 
 def generate_label_from_sam(sam, img_rgb, strict, topk, min_area, morph_close, morph_ksize):
-    """
-    Run SAM with a threshold profile (strict or relaxed), return label map.
-    """
     if strict:
         gen = SamAutomaticMaskGenerator(
             model=sam,
@@ -50,10 +39,9 @@ def generate_label_from_sam(sam, img_rgb, strict, topk, min_area, morph_close, m
             crop_n_layers=1,
             crop_overlap_ratio=0.341,
             box_nms_thresh=0.7,
-            min_mask_region_area=min_area,  # small regions filtered
+            min_mask_region_area=min_area,
         )
     else:
-        # relaxed: easier to get something
         gen = SamAutomaticMaskGenerator(
             model=sam,
             points_per_side=16,
@@ -70,13 +58,11 @@ def generate_label_from_sam(sam, img_rgb, strict, topk, min_area, morph_close, m
     label = np.zeros((H, W), dtype=np.uint8)
 
     if len(anns) == 0:
-        return label, 0  # all background
+        return label, 0
 
-    # 按面积排序，从大到小；只取 Top-K
     anns.sort(key=lambda x: x.get("area", 0), reverse=True)
     kept = anns[:topk]
 
-    # 依次填充，不覆盖已赋值像素（大块优先）
     cur_id = 1
     for a in kept:
         m = a["segmentation"].astype(np.uint8)
@@ -85,7 +71,7 @@ def generate_label_from_sam(sam, img_rgb, strict, topk, min_area, morph_close, m
             m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k)
         label[(label == 0) & (m > 0)] = cur_id
         cur_id += 1
-        if cur_id >= 255:  # 255留作ignore
+        if cur_id >= 255:
             break
 
     return label, (cur_id - 1)
@@ -125,7 +111,6 @@ def main():
     exts = tuple(args.exts.split(","))
     files = sorted([p for p in images_dir.rglob("*") if p.suffix.replace(".","") in exts])
     if len(files) == 0:
-        # fallback: flat
         for e in exts:
             files += list((images_dir).glob(f"*.{e}"))
         files = sorted(files)
@@ -134,10 +119,9 @@ def main():
     print(f"[save] masks -> {out_dir}  (topk={args.topk}, min_area={args.min_area})")
 
     for i, fp in enumerate(files):
-        img = load_image_rgb(fp.as_posix())  # H,W,3 uint8
+        img = load_image_rgb(fp.as_posix())
         H, W = img.shape[:2]
 
-        # 先严格，再不严格
         label, n1 = generate_label_from_sam(
             sam, img, strict=True, topk=args.topk, min_area=args.min_area,
             morph_close=args.morph_close, morph_ksize=args.morph_ksize
@@ -148,11 +132,9 @@ def main():
                 morph_close=args.morph_close, morph_ksize=args.morph_ksize
             )
             n1 = n2
-
-        # 若仍无前景，记日志，但仍保存全 0（背景）
         stem = fp.stem
         out_path = out_dir / f"{stem}.png"
-        Image.fromarray(label, mode="L").save(out_path)  # uint8 灰度
+        Image.fromarray(label, mode="L").save(out_path)
 
         if args.viz:
             ov = draw_overlay(img, label, alpha=0.45)

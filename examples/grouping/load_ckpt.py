@@ -18,7 +18,6 @@ def load_ckpt(ckpt_path: str, device="cuda") -> Dict[str, Any]:
         opacities=opacities, sh0=sh0, shN=shN,
         meta=raw.get("meta", {}), step=raw.get("step", None)
     )
-    # 兼容我们新增的 grouping 参数（若有）
     if "grouping" in raw:
         out["grouping"] = raw["grouping"]
     return out

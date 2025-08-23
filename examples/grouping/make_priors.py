@@ -1,10 +1,8 @@
-# examples/grouping/prepare_priors.py
 import argparse, os, glob
 from pathlib import Path
 import numpy as np
 import torch, torch.nn.functional as F
 import imageio.v2 as imageio
-import cv2
 
 import sys
 EXAMPLES_DIR = Path(__file__).resolve().parents[1]
@@ -51,18 +49,15 @@ def depth_to_normal(depth: torch.Tensor, K: torch.Tensor) -> torch.Tensor:
 def run(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # 1) Dataset（拿 K、分辨率）
     parser = ColmapParser(data_dir=args.data_dir, factor=args.data_factor)
     base = ColmapDataset(parser, split="train")
 
-    # 2) 真实文件名列表（**以 images_dir 为准**，保证与 masks/训练完全对齐）
     img_dir = (
         Path(args.images_dir)
         if args.images_dir
         else Path(args.data_dir) / f"images_{args.data_factor}"
     )
     if not img_dir.exists():
-        # 退回到 images/
         img_dir = Path(args.data_dir) / "images"
     files = sorted(
         glob.glob(str(img_dir / "*.jpg")) + glob.glob(str(img_dir / "*.png"))
@@ -75,13 +70,11 @@ def run(args):
     n = min(len(files), len(base))
     stems = [Path(f).stem for f in files[:n]]
 
-    # 3) 输出目录
     out_depth = Path(args.out_root) / "depth"
     out_depth.mkdir(parents=True, exist_ok=True)
     out_normal = Path(args.out_root) / "normal"
     out_normal.mkdir(parents=True, exist_ok=True)
 
-    # 4) MiDaS(DPT-Large)
     print("loading MiDaS (DPT-Large) …")
     midas = torch.hub.load("intel-isl/MiDaS", "DPT_Large").to(device).eval()
     transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
@@ -91,7 +84,6 @@ def run(args):
         item = base[i]
         stem = stems[i]
 
-        # H,W,K
         if "height" in item and "width" in item:
             H, W = int(item["height"]), int(item["width"])
         else:
@@ -105,16 +97,14 @@ def run(args):
                 H, W = int(img.shape[0]), int(img.shape[1])
         K = item["K"].to(device).float()
 
-        # 读原图（以 images_dir 文件为准）
         im = imageio.imread(files[i])  # HxWx[3|4], uint8
         if im.ndim == 2:
             im = np.stack([im, im, im], axis=-1)
         if im.shape[2] == 4:
             im = im[..., :3]
 
-        # 5) MiDaS 推理（相对深度），再 resize 回 HxW
         inp = tfm(im).to(device)
-        pred = midas(inp).squeeze()  # [h,w] 相对深度（越大越远/近，取决于模型）
+        pred = midas(inp).squeeze()
         pred = (
             F.interpolate(
                 pred[None, None], size=(H, W), mode="bicubic", align_corners=True
@@ -123,20 +113,16 @@ def run(args):
             .float()
         )
 
-        # 6) 保存深度（npy+png16）
         npy_path = out_depth / f"{stem}.npy"
         png_path = out_depth / f"{stem}.png"
         np.save(npy_path.as_posix(), pred.detach().cpu().numpy().astype(np.float32))
         png16 = to_uint16_png(pred.detach().cpu().numpy())
         imageio.imwrite(png_path.as_posix(), png16)
-        # 注意：group_finetune.py 更偏好读取 .npy（浮点），.png 仅作备用/可视化
 
-        # 7) 从深度导法线（用相机 K）
-        normal = depth_to_normal(pred, K)  # [H,W,3], [-1,1]
+        normal = depth_to_normal(pred, K)
         n_npy = out_normal / f"{stem}.npy"
         n_png = out_normal / f"{stem}.png"
         np.save(n_npy.as_posix(), normal.detach().cpu().numpy().astype(np.float32))
-        # 保存一份 0..255 的可视化 PNG
         n_vis = ((normal.detach().cpu().numpy() * 0.5 + 0.5) * 255.0 + 0.5).astype(
             np.uint8
         )

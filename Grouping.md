@@ -1,10 +1,10 @@
-# Grouping（基于 gsplat 的 Gaussian Grouping 复现）
+# Grouping（基于 gsplat 的 Gaussian Grouping 复现+GOC调优）
 
 场景：counter
 
-|               原图               |                    分割叠加图                    |                     硬标签分割                      |
-| :------------------------------: | :----------------------------------------------: | :-------------------------------------------------: |
-| ![DSC07956](images\DSCF5857.png) | ![DSC07956](images\kitchen_grouping_overlay.png) | ![DSC07956_viz](images\kitchen_grouping_labels.png) |
+|                             原图                             |                          分割叠加图                          |                          硬标签分割                          |
+| :----------------------------------------------------------: | :----------------------------------------------------------: | :----------------------------------------------------------: |
+| ![DSC07956](https://raw.githubusercontent.com/Sean220557/gsplat-grouping/main/images/DSCF5857.png) | ![DSC07956](https://raw.githubusercontent.com/Sean220557/gsplat-grouping/main/images/kitchen_grouping_overlay.png) | ![DSC07956_viz](https://raw.githubusercontent.com/Sean220557/gsplat-grouping/main/images/kitchen_grouping_labels.png) |
 
 ------
 ## 0. 环境准备
@@ -32,9 +32,9 @@ python datasets/download_dataset.py
 
 ```
 data/360_v2/garden/
-├─ images/      # 原图
-├─ images_4/    # 例如 factor=4 的下采样图（若存在）
-├─ sparse/      # COLMAP
+├─ images/     
+├─ images_4/   
+├─ sparse/    
 ├─ cameras.json / transforms.json / ...
 ```
 
@@ -56,7 +56,7 @@ New-Item -ItemType Directory -Force -Path (Split-Path $p) | Out-Null
 ```bash
 python grouping/sam_precompute.py \
   --data_dir   data/360_v2/garden \
-  --images_dir data/360_v2/garden/images_4 \
+  --images_dir data/360_v2/garden/images_4—— \
   --mask_dir   data/360_v2/garden/masks \
   --sam_model  vit_h \
   --sam_ckpt   grouping/models/sam/sam_vit_h_4b8939.pth \
@@ -65,9 +65,9 @@ python grouping/sam_precompute.py \
 
 场景：garden
 
-|                原图                |                 分割掩码                  |                   分割预览                   |
-|:--------------------------------:|:-------------------------------------:|:----------------------------------------:|
-| ![DSC07956](images\DSC07956.png) | ![DSC07956](images\DSC07956_mask.png) | ![DSC07956_viz](images\DSC07956_viz.png) |
+|                             原图                             |                           分割掩码                           |                           分割预览                           |
+| :----------------------------------------------------------: | :----------------------------------------------------------: | :----------------------------------------------------------: |
+| ![DSC07956](https://raw.githubusercontent.com/Sean220557/gsplat-grouping/main/images/DSC07956.png) | ![DSC07956](https://raw.githubusercontent.com/Sean220557/gsplat-grouping/main/images/DSC07956_mask.png) | ![DSC07956_viz](https://raw.githubusercontent.com/Sean220557/gsplat-grouping/main/images/DSC07956_viz.png) |
 
 ------
 
@@ -97,7 +97,7 @@ results/garden/
 └─ ckpts/
    ├─ ckpt_0999_rank0.pt
    ├─ ckpt_1999_rank0.pt
-   └─ ckpt_6999_rank0.pt   # ← 推荐在 Grouping 中用它（或你训练满意的最新 ckpt）
+   └─ ckpt_6999_rank0.pt   
 ```
 
 ------

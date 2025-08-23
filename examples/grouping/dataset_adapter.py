@@ -20,7 +20,6 @@ class GroupingDataset(torch.utils.data.Dataset):
         parser = ColmapParser(data_dir=data_dir, factor=factor)
         self.base = ColmapDataset(parser, split=split, patch_size=patch_size)
 
-        # 1) 统一的 images_dir
         if images_dir:
             img_dir = Path(images_dir)
         else:
@@ -45,7 +44,6 @@ class GroupingDataset(torch.utils.data.Dataset):
             raise FileNotFoundError(f"No images found in {img_dir}")
         self.index_paths: List[Path] = [Path(f) for f in files]
 
-        # 2) masks
         self.mask_dir = Path(mask_dir) if mask_dir else None
         self._mask_map: Dict[str, Path] = {}
         if self.mask_dir and self.mask_dir.exists():
@@ -53,7 +51,6 @@ class GroupingDataset(torch.utils.data.Dataset):
                 self._mask_map[p.stem] = p
 
     def __len__(self):
-        # 与 base 对齐：取两者最小长度，避免越界
         return min(len(self.base), len(self.index_paths))
 
     def _get_hw_from_image(self, img):
@@ -73,13 +70,11 @@ class GroupingDataset(torch.utils.data.Dataset):
         path = self.index_paths[idx]  # 用统一的文件名来源
         stem = path.stem
 
-        # H/W：没有就从 image 推断
         if "height" in item and "width" in item:
             H, W = int(item["height"]), int(item["width"])
         else:
             H, W = self._get_hw_from_image(item["image"])
 
-        # 读取/对齐 mask；没有就全 0（训练端会跳过）
         if self.mask_dir and stem in self._mask_map:
             mask_np = imageio.imread(self._mask_map[stem]).astype(np.int64)
             if mask_np.shape[:2] != (H, W):
@@ -95,7 +90,6 @@ class GroupingDataset(torch.utils.data.Dataset):
         else:
             mask_np = np.zeros((H, W), dtype=np.int64)
 
-        # 视图矩阵统一为 viewmat（w2c）
         if "viewmat" in item:
             pass
         elif "camtoworld" in item:
